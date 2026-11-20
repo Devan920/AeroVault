@@ -3,10 +3,11 @@
   "appName": "AeroVault",
   "webDir": "www",
   "server": {
-    "url": "https://aerovault.koyeb.app",
+    "url": "https://aerovault-u3lw.onrender.com",
     "cleartext": true,
     "allowNavigation": [
-      "*.koyeb.app",
+      "aerovault-u3lw.onrender.com",
+      "*.onrender.com",
       "localhost",
       "10.0.2.2",
       "127.0.0.1",

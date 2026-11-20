@@ -103,8 +103,8 @@
   <div class="credits">Crafted by <strong>Devanarayanan</strong></div>
 
   <script>
-    // Configurable server endpoint (Koyeb or local testing)
-    const SERVER_URL = window.AEROVAULT_SERVER_URL || "https://aerovault.koyeb.app";
+    // Configurable server endpoint (Render production or local testing)
+    const SERVER_URL = window.AEROVAULT_SERVER_URL || "https://aerovault-u3lw.onrender.com";
 
     function checkConnection() {
       fetch(SERVER_URL + "/api/info", { mode: 'cors' })
