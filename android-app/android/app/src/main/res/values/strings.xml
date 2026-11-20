@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">AeroVault</string>
+    <string name="title_activity_main">AeroVault</string>
+    <string name="package_name">com.devu.aerovault</string>
+    <string name="custom_url_scheme">com.devu.aerovault</string>
+</resources>

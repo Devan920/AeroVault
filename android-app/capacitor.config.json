@@ -1,0 +1,22 @@
+{
+  "appId": "com.devu.aerovault",
+  "appName": "AeroVault",
+  "webDir": "www",
+  "server": {
+    "url": "https://aerovault.koyeb.app",
+    "cleartext": true,
+    "allowNavigation": [
+      "*.koyeb.app",
+      "localhost",
+      "10.0.2.2",
+      "127.0.0.1",
+      "discord.com",
+      "cdn.discordapp.com"
+    ]
+  },
+  "android": {
+    "allowMixedContent": true,
+    "captureInput": true,
+    "webContentsDebuggingEnabled": true
+  }
+}
