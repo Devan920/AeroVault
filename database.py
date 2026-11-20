@@ -322,7 +322,7 @@ async def get_all_folders() -> List[Dict[str, Any]]:
 
 async def get_folder_breadcrumbs(folder_id: Optional[str]) -> List[Dict[str, Any]]:
     if not folder_id or folder_id in ("", "null", "root"):
-        return [{"id": None, "name": "My Drive"}]
+        return [{"id": None, "name": "AeroVault"}]
 
     breadcrumbs = []
     current_id = folder_id
@@ -335,7 +335,7 @@ async def get_folder_breadcrumbs(folder_id: Optional[str]) -> List[Dict[str, Any
         current_id = row["parent_id"]
 
     breadcrumbs.reverse()
-    return [{"id": None, "name": "My Drive"}] + breadcrumbs
+    return [{"id": None, "name": "AeroVault"}] + breadcrumbs
 
 
 async def rename_folder(folder_id: str, new_name: str) -> Optional[Dict[str, Any]]:

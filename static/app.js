@@ -15,7 +15,7 @@
     theme: localStorage.getItem('aerovault_theme') || 'light',
     folders: [],
     files: [],
-    breadcrumbs: [{ id: null, name: 'All Files' }],
+    breadcrumbs: [{ id: null, name: 'AeroVault' }],
     activeAudio: null,
     moveTargetItem: null,
     storageNodes: [],
@@ -231,7 +231,7 @@
   // ===================================================================
   async function loadBreadcrumbs() {
     if (state.currentCategory !== 'all') {
-      let title = 'All Files';
+      let title = 'AeroVault';
       if (state.currentCategory === 'recent') title = 'Recent Uploads';
       if (state.currentCategory === 'media') title = 'Media & Audio';
       if (state.currentCategory === 'trash') title = 'Trash';
@@ -257,7 +257,7 @@
 
         const item = document.createElement('span');
         item.className = `breadcrumb-node ${index === state.breadcrumbs.length - 1 ? 'active' : ''}`;
-        item.textContent = b.name === 'My Drive' ? 'All Files' : b.name;
+        item.textContent = (b.name === 'My Drive' || b.name === 'All Files') ? 'AeroVault' : b.name;
         item.dataset.id = b.id || '';
         item.addEventListener('click', () => {
           if (index !== state.breadcrumbs.length - 1) {
@@ -1157,7 +1157,7 @@
 
       const rootItem = document.createElement('div');
       rootItem.className = 'tree-folder-node selected';
-      rootItem.innerHTML = '📁 <strong>All Files (Root)</strong>';
+      rootItem.innerHTML = '📁 <strong>AeroVault (Root)</strong>';
       rootItem.onclick = () => {
         document.querySelectorAll('.tree-folder-node').forEach(el => el.classList.remove('selected'));
         rootItem.classList.add('selected');
