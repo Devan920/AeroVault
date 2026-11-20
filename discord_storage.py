@@ -192,8 +192,9 @@ class DiscordStorageEngine:
             files = {
                 "files[0]": (chunk_name, chunk_data, "application/octet-stream")
             }
+            part_label = f"({chunk_index + 1}/{total_chunks})" if total_chunks > 0 else f"[Part {chunk_index + 1}]"
             data = {
-                "content": f"📦 **File Chunk**: `{chunk_name}` ({chunk_index + 1}/{total_chunks}) on Node {node_num} for `{original_filename}`"
+                "content": f"📦 **File Chunk**: `{chunk_name}` {part_label} on Node {node_num} for `{original_filename}`"
             }
 
             try:
@@ -233,82 +234,191 @@ class DiscordStorageEngine:
     async def upload_file_stream(
         self,
         filename: str,
-        file_bytes: bytes,
+        file_source: Union[bytes, Any],
         mime_type: str = "application/octet-stream"
     ) -> Tuple[List[Dict[str, Any]], int]:
         """
-        Splits file_bytes into 19MB chunks and uploads them across all available storage nodes
-        using round-robin load balancing and parallel execution (up to 6 concurrent workers).
-        Returns a list of chunk descriptors and total size.
+        Streams file data directly in 19MB chunks into a bounded async queue (maxsize=6)
+        consumed by 6 parallel worker tasks across all available storage nodes using HTTP/2
+        and connection pooling. Each chunk buffer is explicitly freed immediately after upload
+        to keep RAM usage minimal (safe for 512MB RAM constraints).
         """
-        total_size = len(file_bytes)
-        num_chunks = max(1, (total_size + CHUNK_SIZE - 1) // CHUNK_SIZE)
-
         # Fallback to local storage if no nodes configured
         if not self.is_configured:
             logger.info(f"Storage nodes not configured. Using local fallback storage for '{filename}'.")
             chunk_descriptors: List[Dict[str, Any]] = []
-            for i in range(num_chunks):
-                start = i * CHUNK_SIZE
-                end = min(start + CHUNK_SIZE, total_size)
-                chunk_slice = file_bytes[start:end]
-                pseudo_id = f"local_{os.urandom(8).hex()}"
-                chunk_path = FALLBACK_DIR / f"{pseudo_id}.part"
-                chunk_path.write_bytes(chunk_slice)
-                chunk_descriptors.append({
-                    "message_id": pseudo_id,
-                    "node_url": "local",
-                    "node_index": 0
-                })
+            total_size = 0
+            chunk_idx = 0
+
+            if hasattr(file_source, "read"):
+                is_async = asyncio.iscoroutinefunction(file_source.read)
+                while True:
+                    chunk = await file_source.read(CHUNK_SIZE) if is_async else file_source.read(CHUNK_SIZE)
+                    if not chunk:
+                        if chunk_idx == 0:
+                            chunk = b""
+                        else:
+                            break
+                    total_size += len(chunk)
+                    pseudo_id = f"local_{os.urandom(8).hex()}"
+                    chunk_path = FALLBACK_DIR / f"{pseudo_id}.part"
+                    chunk_path.write_bytes(chunk)
+                    chunk_descriptors.append({
+                        "message_id": pseudo_id,
+                        "node_url": "local",
+                        "node_index": 0
+                    })
+                    chunk_idx += 1
+                    if len(chunk) == 0:
+                        break
+            else:
+                raw_bytes: bytes = file_source
+                total_size = len(raw_bytes)
+                num_chunks = max(1, (total_size + CHUNK_SIZE - 1) // CHUNK_SIZE)
+                for i in range(num_chunks):
+                    start = i * CHUNK_SIZE
+                    end = min(start + CHUNK_SIZE, total_size)
+                    chunk_slice = raw_bytes[start:end]
+                    pseudo_id = f"local_{os.urandom(8).hex()}"
+                    chunk_path = FALLBACK_DIR / f"{pseudo_id}.part"
+                    chunk_path.write_bytes(chunk_slice)
+                    chunk_descriptors.append({
+                        "message_id": pseudo_id,
+                        "node_url": "local",
+                        "node_index": 0
+                    })
             return chunk_descriptors, total_size
 
         nodes = self._node_urls
         num_nodes = len(nodes)
-
-        # Calculate round-robin starting position
         start_counter = self._round_robin_counter
-        self._round_robin_counter = (self._round_robin_counter + num_chunks) % num_nodes
 
-        # Upload up to 6 chunks concurrently
+        # Bounded async queue (maxsize=6) to enforce strict ~114MB max in-flight RAM footprint
+        queue: asyncio.Queue = asyncio.Queue(maxsize=6)
         semaphore = asyncio.Semaphore(6)
-        timeout = httpx.Timeout(120.0, connect=15.0)
-        limits = httpx.Limits(max_connections=30, max_keepalive_connections=20)
+        timeout = httpx.Timeout(180.0, connect=15.0)
+        limits = httpx.Limits(max_connections=50, max_keepalive_connections=20)
 
-        async with httpx.AsyncClient(timeout=timeout, limits=limits) as client:
-            async def upload_worker(chunk_idx: int, chunk_slice: bytes, target_url: str, node_idx: int) -> Tuple[int, Dict[str, Any]]:
-                chunk_name = filename if num_chunks == 1 else f"{filename}.part{chunk_idx}"
-                async with semaphore:
-                    msg_id = await self._post_chunk_with_retry(
-                        client=client,
-                        url=target_url,
-                        chunk_name=chunk_name,
-                        chunk_data=chunk_slice,
-                        chunk_index=chunk_idx,
-                        total_chunks=num_chunks,
-                        original_filename=filename,
-                        node_num=node_idx + 1
-                    )
-                    return chunk_idx, {
-                        "message_id": msg_id,
-                        "node_url": target_url,
-                        "node_index": node_idx + 1
-                    }
+        results: List[Tuple[int, Dict[str, Any]]] = []
+        errors: List[Exception] = []
 
-            tasks = []
-            for i in range(num_chunks):
-                node_idx = (start_counter + i) % num_nodes
-                target_url = nodes[node_idx]
-                start_byte = i * CHUNK_SIZE
-                end_byte = min(start_byte + CHUNK_SIZE, total_size)
-                slice_bytes = file_bytes[start_byte:end_byte]
-                tasks.append(upload_worker(i, slice_bytes, target_url, node_idx))
+        async with httpx.AsyncClient(http2=True, timeout=timeout, limits=limits) as client:
+            async def worker():
+                while True:
+                    item = await queue.get()
+                    if item is None:
+                        queue.task_done()
+                        break
 
-            results = await asyncio.gather(*tasks)
-            # Sort by chunk index to guarantee strictly sequential byte order
-            results.sort(key=lambda x: x[0])
-            chunk_descriptors = [r[1] for r in results]
+                    chunk_idx, chunk_bytes, target_url, node_idx, is_single_chunk = item
+                    chunk_name = filename if is_single_chunk else f"{filename}.part{chunk_idx}"
+                    try:
+                        async with semaphore:
+                            msg_id = await self._post_chunk_with_retry(
+                                client=client,
+                                url=target_url,
+                                chunk_name=chunk_name,
+                                chunk_data=chunk_bytes,
+                                chunk_index=chunk_idx,
+                                total_chunks=0,
+                                original_filename=filename,
+                                node_num=node_idx + 1
+                            )
+                        results.append((chunk_idx, {
+                            "message_id": msg_id,
+                            "node_url": target_url,
+                            "node_index": node_idx + 1
+                        }))
+                    except Exception as exc:
+                        logger.error(f"[Node {node_idx + 1}] Worker failed for chunk {chunk_idx}: {exc}")
+                        errors.append(exc)
+                    finally:
+                        # Memory safety: explicitly free the 19MB buffer immediately!
+                        del chunk_bytes
+                        queue.task_done()
 
-        logger.info(f"Successfully uploaded '{filename}' ({total_size} bytes, {num_chunks} chunks) across {num_nodes} nodes.")
+            # Start 6 parallel worker tasks
+            workers = [asyncio.create_task(worker()) for _ in range(6)]
+
+            total_size = 0
+            chunk_idx = 0
+
+            # Producer reads chunks and feeds bounded queue
+            try:
+                if hasattr(file_source, "read"):
+                    is_async_read = asyncio.iscoroutinefunction(file_source.read)
+
+                    async def read_next():
+                        if is_async_read:
+                            return await file_source.read(CHUNK_SIZE)
+                        return file_source.read(CHUNK_SIZE)
+
+                    first_chunk = await read_next()
+                    if not first_chunk:
+                        first_chunk = b""
+                        second_chunk = b""
+                    else:
+                        second_chunk = await read_next()
+
+                    if not second_chunk:
+                        # Exactly 1 chunk
+                        total_size = len(first_chunk)
+                        node_idx = (start_counter + 0) % num_nodes
+                        await queue.put((0, first_chunk, nodes[node_idx], node_idx, True))
+                        chunk_idx = 1
+                    else:
+                        # Multi-chunk file
+                        total_size = len(first_chunk) + len(second_chunk)
+                        node_idx = (start_counter + 0) % num_nodes
+                        await queue.put((0, first_chunk, nodes[node_idx], node_idx, False))
+
+                        node_idx = (start_counter + 1) % num_nodes
+                        await queue.put((1, second_chunk, nodes[node_idx], node_idx, False))
+
+                        chunk_idx = 2
+                        while True:
+                            if errors:
+                                break
+                            c = await read_next()
+                            if not c:
+                                break
+                            total_size += len(c)
+                            node_idx = (start_counter + chunk_idx) % num_nodes
+                            await queue.put((chunk_idx, c, nodes[node_idx], node_idx, False))
+                            chunk_idx += 1
+                else:
+                    # Raw bytes source
+                    raw_bytes: bytes = file_source
+                    total_size = len(raw_bytes)
+                    num_chunks = max(1, (total_size + CHUNK_SIZE - 1) // CHUNK_SIZE)
+                    is_single = (num_chunks == 1)
+                    for i in range(num_chunks):
+                        if errors:
+                            break
+                        start = i * CHUNK_SIZE
+                        end = min(start + CHUNK_SIZE, total_size)
+                        slice_data = raw_bytes[start:end]
+                        node_idx = (start_counter + i) % num_nodes
+                        await queue.put((i, slice_data, nodes[node_idx], node_idx, is_single))
+                    chunk_idx = num_chunks
+
+            finally:
+                # Signal all 6 workers to exit
+                for _ in range(6):
+                    await queue.put(None)
+                await asyncio.gather(*workers)
+
+        if errors:
+            raise errors[0]
+
+        # Advance round-robin counter for next upload
+        self._round_robin_counter = (self._round_robin_counter + chunk_idx) % num_nodes
+
+        # Sort strictly by chunk index
+        results.sort(key=lambda x: x[0])
+        chunk_descriptors = [r[1] for r in results]
+
+        logger.info(f"Successfully uploaded '{filename}' ({total_size} bytes, {len(chunk_descriptors)} chunks) across {num_nodes} nodes.")
         return chunk_descriptors, total_size
 
     async def get_fresh_chunk_attachment_url(

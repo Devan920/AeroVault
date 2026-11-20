@@ -7,18 +7,19 @@
   // Application State
   const state = {
     currentFolderId: null,
-    currentCategory: 'all', // 'all', 'recent', 'media', 'trash'
+    currentCategory: 'all', // 'all', 'recent', 'media', 'trash', 'settings'
     filterType: 'all',      // 'all', 'audio', 'video', 'image', 'document'
     sortBy: 'date_desc',
     searchQuery: '',
     viewMode: localStorage.getItem('aerovault_view_mode') || 'grid',
-    theme: localStorage.getItem('aerovault_theme') || 'light',
+    density: localStorage.getItem('aerovault_density') || 'comfortable',
+    theme: localStorage.getItem('aerovault_theme') || 'dark',
     folders: [],
     files: [],
     breadcrumbs: [{ id: null, name: 'AeroVault' }],
     activeAudio: null,
     moveTargetItem: null,
-    storageNodes: [],
+    storageStats: {},
   };
 
   // DOM Elements
@@ -40,10 +41,12 @@
     menuUploadFolderBtn: document.getElementById('menuUploadFolderBtn'),
     fileInputHidden: document.getElementById('fileInputHidden'),
     folderInputHidden: document.getElementById('folderInputHidden'),
-    sidebarNav: document.querySelector('.sidebar-nav'),
+    bottomNavBar: document.getElementById('bottomNavBar'),
+    fabNewBtn: document.getElementById('fabNewBtn'),
     breadcrumbsNav: document.getElementById('breadcrumbsNav'),
     filterChipsBar: document.getElementById('filterChipsBar'),
     sortSelect: document.getElementById('sortSelect'),
+    workspaceSubbar: document.getElementById('workspaceSubbar'),
     vaultScrollCanvas: document.getElementById('vaultScrollCanvas'),
     contentLoader: document.getElementById('contentLoader'),
     emptyState: document.getElementById('emptyState'),
@@ -56,9 +59,16 @@
     filesGrid: document.getElementById('filesGrid'),
     filesListContainer: document.getElementById('filesListContainer'),
     filesListBody: document.getElementById('filesListBody'),
-    storageMeterBar: document.getElementById('storageMeterBar'),
-    storageUsedText: document.getElementById('storageUsedText'),
-    storageFileCount: document.getElementById('storageFileCount'),
+    // Settings View Elements
+    settingsView: document.getElementById('settingsView'),
+    themeDarkCard: document.getElementById('themeDarkCard'),
+    themeLightCard: document.getElementById('themeLightCard'),
+    settingsViewModeGroup: document.getElementById('settingsViewModeGroup'),
+    settingsDensityGroup: document.getElementById('settingsDensityGroup'),
+    settingsStorageMeterBar: document.getElementById('settingsStorageMeterBar'),
+    settingsUsedSize: document.getElementById('settingsUsedSize'),
+    settingsFileCount: document.getElementById('settingsFileCount'),
+    settingsChunkCount: document.getElementById('settingsChunkCount'),
     dragDropOverlay: document.getElementById('dragDropOverlay'),
     uploadManager: document.getElementById('uploadManager'),
     uploadManagerTitle: document.getElementById('uploadManagerTitle'),
@@ -170,18 +180,41 @@
     state.theme = theme;
     localStorage.setItem('aerovault_theme', theme);
 
-    if (theme === 'dark') {
-      elements.sunIcon.classList.remove('hidden');
-      elements.moonIcon.classList.add('hidden');
-    } else {
-      elements.sunIcon.classList.add('hidden');
-      elements.moonIcon.classList.remove('hidden');
+    if (elements.sunIcon && elements.moonIcon) {
+      if (theme === 'dark') {
+        elements.sunIcon.classList.remove('hidden');
+        elements.moonIcon.classList.add('hidden');
+      } else {
+        elements.sunIcon.classList.add('hidden');
+        elements.moonIcon.classList.remove('hidden');
+      }
+    }
+
+    // Synchronize settings theme cards if present
+    if (elements.themeDarkCard && elements.themeLightCard) {
+      elements.themeDarkCard.classList.toggle('active', theme === 'dark');
+      elements.themeLightCard.classList.toggle('active', theme === 'light');
     }
   }
 
   function toggleTheme() {
     const newTheme = state.theme === 'dark' ? 'light' : 'dark';
     applyTheme(newTheme);
+  }
+
+  // ===================================================================
+  // DENSITY MANAGEMENT (COMFORTABLE vs COMPACT)
+  // ===================================================================
+  function applyDensity(density) {
+    document.documentElement.setAttribute('data-density', density);
+    state.density = density;
+    localStorage.setItem('aerovault_density', density);
+
+    if (elements.settingsDensityGroup) {
+      elements.settingsDensityGroup.querySelectorAll('.settings-toggle-btn').forEach(btn => {
+        btn.classList.toggle('active', btn.dataset.density === density);
+      });
+    }
   }
 
   // ===================================================================
@@ -202,25 +235,40 @@
       elements.filesGrid.classList.add('hidden');
       elements.filesListContainer.classList.remove('hidden');
     }
+
+    if (elements.settingsViewModeGroup) {
+      elements.settingsViewModeGroup.querySelectorAll('.settings-toggle-btn').forEach(btn => {
+        btn.classList.toggle('active', btn.dataset.view === mode);
+      });
+    }
   }
 
   // ===================================================================
   // SYSTEM INFO & STORAGE STATS
   // ===================================================================
+  function updateStorageUI() {
+    const stats = state.storageStats || {};
+    const activeBytes = stats.active_bytes || 0;
+    const activeCount = stats.active_count || 0;
+    const totalChunks = stats.total_chunks || 0;
+
+    if (elements.settingsUsedSize) elements.settingsUsedSize.textContent = formatBytes(activeBytes);
+    if (elements.settingsFileCount) elements.settingsFileCount.textContent = `${activeCount}`;
+    if (elements.settingsChunkCount) elements.settingsChunkCount.textContent = `${totalChunks}`;
+
+    if (elements.settingsStorageMeterBar) {
+      const pct = Math.min(Math.max((activeBytes / (1024 * 1024 * 500)) * 100, 4), 96);
+      elements.settingsStorageMeterBar.style.width = `${pct}%`;
+    }
+  }
+
   async function fetchSystemInfo() {
     try {
       const res = await fetch('/api/info');
       if (!res.ok) throw new Error('Info request failed');
       const data = await res.json();
-
-      // Storage Gauge
-      const stats = data.stats || {};
-      const activeBytes = stats.active_bytes || 0;
-      elements.storageUsedText.textContent = formatBytes(activeBytes);
-      elements.storageFileCount.textContent = `${stats.active_count || 0} files saved`;
-
-      const pct = Math.min(Math.max((activeBytes / (1024 * 1024 * 500)) * 100, 4), 96);
-      elements.storageMeterBar.style.width = `${pct}%`;
+      state.storageStats = data.stats || {};
+      updateStorageUI();
     } catch (err) {
       console.error('fetchSystemInfo error:', err);
     }
@@ -594,28 +642,49 @@
     state.currentFolderId = folderId || null;
     state.currentCategory = 'all';
     state.searchQuery = '';
-    elements.globalSearchInput.value = '';
-    elements.clearSearchBtn.classList.add('hidden');
+    if (elements.globalSearchInput) elements.globalSearchInput.value = '';
+    if (elements.clearSearchBtn) elements.clearSearchBtn.classList.add('hidden');
 
-    document.querySelectorAll('.sidebar-nav .nav-link').forEach(el => {
-      if (el.dataset.category === 'all') el.classList.add('active');
-      else el.classList.remove('active');
-    });
+    if (elements.bottomNavBar) {
+      elements.bottomNavBar.querySelectorAll('.bottom-nav-tab').forEach(el => {
+        if (el.dataset.category === 'all') el.classList.add('active');
+        else el.classList.remove('active');
+      });
+    }
+
+    if (elements.settingsView) elements.settingsView.classList.add('hidden');
+    if (elements.vaultScrollCanvas) elements.vaultScrollCanvas.classList.remove('hidden');
+    if (elements.workspaceSubbar) elements.workspaceSubbar.classList.remove('hidden');
 
     loadContents();
   }
 
   function setCategory(category) {
     state.currentCategory = category;
+
+    if (elements.bottomNavBar) {
+      elements.bottomNavBar.querySelectorAll('.bottom-nav-tab').forEach(el => {
+        if (el.dataset.category === category) el.classList.add('active');
+        else el.classList.remove('active');
+      });
+    }
+
+    if (category === 'settings') {
+      if (elements.vaultScrollCanvas) elements.vaultScrollCanvas.classList.add('hidden');
+      if (elements.workspaceSubbar) elements.workspaceSubbar.classList.add('hidden');
+      if (elements.settingsView) elements.settingsView.classList.remove('hidden');
+      updateStorageUI();
+      return;
+    }
+
+    if (elements.settingsView) elements.settingsView.classList.add('hidden');
+    if (elements.vaultScrollCanvas) elements.vaultScrollCanvas.classList.remove('hidden');
+    if (elements.workspaceSubbar) elements.workspaceSubbar.classList.remove('hidden');
+
     state.currentFolderId = null;
     state.searchQuery = '';
-    elements.globalSearchInput.value = '';
-    elements.clearSearchBtn.classList.add('hidden');
-
-    document.querySelectorAll('.sidebar-nav .nav-link').forEach(el => {
-      if (el.dataset.category === category) el.classList.add('active');
-      else el.classList.remove('active');
-    });
+    if (elements.globalSearchInput) elements.globalSearchInput.value = '';
+    if (elements.clearSearchBtn) elements.clearSearchBtn.classList.add('hidden');
 
     loadContents();
   }
@@ -1317,13 +1386,43 @@
       elements.fileInputHidden.click();
     });
 
-    // Sidebar Nav Links
-    elements.sidebarNav.querySelectorAll('.nav-link').forEach(btn => {
-      btn.addEventListener('click', () => {
-        const cat = btn.dataset.category;
-        setCategory(cat);
+    // Bottom Nav Tabs
+    if (elements.bottomNavBar) {
+      elements.bottomNavBar.querySelectorAll('.bottom-nav-tab').forEach(btn => {
+        btn.addEventListener('click', () => {
+          const cat = btn.dataset.category;
+          setCategory(cat);
+        });
       });
-    });
+    }
+
+    // FAB Button (Mobile / Quick Upload)
+    if (elements.fabNewBtn) {
+      elements.fabNewBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        elements.newMenuDropdown.classList.toggle('hidden');
+      });
+    }
+
+    // Settings Theme Selector Cards
+    if (elements.themeDarkCard) {
+      elements.themeDarkCard.addEventListener('click', () => applyTheme('dark'));
+    }
+    if (elements.themeLightCard) {
+      elements.themeLightCard.addEventListener('click', () => applyTheme('light'));
+    }
+
+    // Settings View Mode & Density
+    if (elements.settingsViewModeGroup) {
+      elements.settingsViewModeGroup.querySelectorAll('.settings-toggle-btn').forEach(btn => {
+        btn.addEventListener('click', () => applyViewMode(btn.dataset.view));
+      });
+    }
+    if (elements.settingsDensityGroup) {
+      elements.settingsDensityGroup.querySelectorAll('.settings-toggle-btn').forEach(btn => {
+        btn.addEventListener('click', () => applyDensity(btn.dataset.density));
+      });
+    }
 
     // Filter Pills
     elements.filterChipsBar.querySelectorAll('.filter-btn').forEach(btn => {
@@ -1410,6 +1509,7 @@
   // ===================================================================
   async function init() {
     applyTheme(state.theme);
+    applyDensity(state.density);
     applyViewMode(state.viewMode);
     bindEventListeners();
     await fetchSystemInfo();

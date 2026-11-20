@@ -158,8 +158,11 @@ def run_tests():
         assert html_res.status_code == 200
         assert "AeroVault" in html_res.text
         assert "Devanarayanan" in html_res.text
+        assert "bottom-nav-bar" in html_res.text
+        assert "settingsView" in html_res.text
+        assert "themeDarkCard" in html_res.text
         assert "discord" not in html_res.text.lower()
-        print("Static frontend serving verified with 100% white-labeling!")
+        print("Static frontend serving verified with 100% white-labeling, bottom nav, and Settings view!")
 
         print("--- ALL 10-NODE MULTI-WEBHOOK BACKEND & FRONTEND TESTS PASSED SUCCESSFULLY! ---")
 

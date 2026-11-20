@@ -272,19 +272,17 @@ async def upload_file_route(
     folder_id: Optional[str] = Form(None)
 ):
     try:
-        content = await file.read()
         filename = file.filename or "unnamed_file"
-        size_bytes = len(content)
 
         mime_type = file.content_type
         if not mime_type or mime_type == "application/octet-stream":
             guessed_type, _ = mimetypes.guess_type(filename)
             mime_type = guessed_type or "application/octet-stream"
 
-        # Upload sequentially in 19MB chunks through storage engine
+        # Stream directly in 19MB chunks through bounded async queue into parallel nodes
         chunk_message_ids, actual_size = await storage_engine.upload_file_stream(
             filename=filename,
-            file_bytes=content,
+            file_source=file,
             mime_type=mime_type
         )
 
@@ -302,7 +300,7 @@ async def upload_file_route(
             "file": saved_file,
             "chunks_count": len(chunk_message_ids),
             "node_count": storage_engine.node_count,
-            "storage_backend": "discord" if storage_engine.is_configured else "fallback"
+            "storage_backend": "cloud" if storage_engine.is_configured else "fallback"
         }
     except Exception as e:
         logger.exception("Upload failed")
